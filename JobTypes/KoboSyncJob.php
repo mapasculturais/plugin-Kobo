@@ -1,6 +1,6 @@
 <?php
 
-namespace Kobo;
+namespace Kobo\JobTypes;
 
 use Kobo\KoboApi;
 use Kobo\Plugin;
