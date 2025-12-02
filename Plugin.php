@@ -2,7 +2,7 @@
 
 namespace Kobo;
 
-use Kobo\KoboSyncJob;
+use Kobo\JobTypes\KoboSyncJob;
 use MapasCulturais\App;
 // die('adasdasd');
 // require __DIR__ . "/JobTypes/KoboSyncJob.php";
