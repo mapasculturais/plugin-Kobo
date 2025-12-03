@@ -2,10 +2,9 @@
 
 namespace Kobo;
 
-use Kobo\JobTypes\KoboSyncJob;
 use MapasCulturais\App;
-// die('adasdasd');
-// require __DIR__ . "/JobTypes/KoboSyncJob.php";
+
+require_once __DIR__ . "/JobTypes/KoboSyncJob.php";
 
 class Plugin extends \MapasCulturais\Plugin
 {
@@ -34,17 +33,15 @@ class Plugin extends \MapasCulturais\Plugin
         $app = App::i();
         $self = $this;
 
-        // $app->registerJobType(new JobTypes\KoboSyncJob(JobTypes\KoboSyncJob::SLUG));
-        $app->registerJobType(new KoboSyncJob(KoboSyncJob::SLUG));
+        $app->registerJobType(new JobTypes\KoboSyncJob(JobTypes\KoboSyncJob::SLUG));
 
-        $self->testejob();
+        $self->scheduleSyncJobs();
     }
 
-    public function testejob()
+    public function scheduleSyncJobs()
     {
         $app = App::i();
         $integrations = $this->config['integrations'];
-
         
         if (!isset($integrations) || !is_array($integrations)) {
             return;
@@ -65,11 +62,11 @@ class Plugin extends \MapasCulturais\Plugin
             $interval_string = $integration['periodicity'] ?? '+1 day';
             
             $app->enqueueJob(
-                KoboSyncJob::SLUG,
+                JobTypes\KoboSyncJob::SLUG,
                 $job_data,
                 'now',
                 $interval_string,
-                0,
+                1,
                 true
             );
         }
