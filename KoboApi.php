@@ -70,5 +70,10 @@ class KoboApi
         $response = $this->request("assets/{$assetUid}/data/{$queryString}");
         return $response['results'] ?? [];
     }
+
+    public function getUserFromKobo(string $username): ?array
+    {
+        return $this->request("users/{$username}/");
+    }
 }
 
