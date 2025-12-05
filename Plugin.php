@@ -68,9 +68,9 @@ class Plugin extends \MapasCulturais\Plugin
                 $entity_class = $entity_name;
             }
             
-            // Registra o metadado kobo_form_id
-            $this->registerMetadata($entity_class, 'kobo_form_id', [
-                'label' => i::__('ID do Formulário Kobo'),
+            // Registra o metadado kobo_submission_uuid
+            $this->registerMetadata($entity_class, 'kobo_submission_uuid', [
+                'label' => i::__('UUID da Submissão Kobo'),
                 'type' => 'string',
                 'private' => true,
             ]);

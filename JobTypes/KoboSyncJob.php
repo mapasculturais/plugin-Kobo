@@ -87,9 +87,9 @@ class KoboSyncJob extends JobType
         
         
         $submission_data = $submission;
-        $kobo_form_id = $submission['_uuid'] ?? $submission['_id'] ?? null;
+        $kobo_submission_uuid = $submission['_uuid'] ?? $submission['_id'] ?? null;
         
-        if (!$kobo_form_id) {
+        if (!$kobo_submission_uuid) {
             throw new \Exception(i::__('Submission sem identificador do formulário do Kobo'));
         }
 
@@ -105,17 +105,17 @@ class KoboSyncJob extends JobType
                 }
             }
         }
-        $this->updateOrCreateEntity($submission_data, $target_entity, $field_mapping, $user, $kobo_form_id);
+        $this->updateOrCreateEntity($submission_data, $target_entity, $field_mapping, $user, $kobo_submission_uuid);
 
     }
     
-    protected function updateOrCreateEntity(array $submission_data, string $target_entity, array $field_mapping, $user, string $kobo_form_id)
+    protected function updateOrCreateEntity(array $submission_data, string $target_entity, array $field_mapping, $user, string $kobo_submission_uuid)
     {
         $app = App::i();
         
         $entity_class_name = $this->getEntityClassName($target_entity);
 
-        $existing_entity = $this->findEntityByKoboFormId($entity_class_name, $kobo_form_id);
+        $existing_entity = $this->findEntityByKoboSubmissionUuid($entity_class_name, $kobo_submission_uuid);
 
         $app->disableAccessControl();
 
@@ -129,8 +129,8 @@ class KoboSyncJob extends JobType
                 $entity->owner = $user->profile;
             }
             
-            // Salva o ID do formulário do Kobo
-            $entity->kobo_form_id = $kobo_form_id;
+            // Salva o UUID da submissão do Kobo
+            $entity->kobo_submission_uuid = $kobo_submission_uuid;
             
             $app->log->info(i::__('KoboSyncJob: Criando nova entidade'));
         }
@@ -167,18 +167,18 @@ class KoboSyncJob extends JobType
     }
 
 
-    protected function findEntityByKoboFormId(string $entity_class_name, string $kobo_form_id)
+    protected function findEntityByKoboSubmissionUuid(string $entity_class_name, string $kobo_submission_uuid)
     {
         $app = App::i();
         
         // Busca a entidade completa usando DQL na tabela de metadados
         $dql = "SELECT e FROM {$entity_class_name} e 
                 LEFT JOIN e.__metadata m 
-                WITH m.key = 'kobo_form_id' AND m.value = :kobo_form_id 
+                WITH m.key = 'kobo_submission_uuid' AND m.value = :kobo_submission_uuid 
                 WHERE m.id IS NOT NULL";
         
         $query = $app->em->createQuery($dql);
-        $query->setParameter('kobo_form_id', $kobo_form_id);
+        $query->setParameter('kobo_submission_uuid', $kobo_submission_uuid);
         $entity = $query->setMaxResults(1)->getOneOrNullResult();
         
         return $entity;
