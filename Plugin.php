@@ -3,6 +3,7 @@
 namespace Kobo;
 
 use MapasCulturais\App;
+use MapasCulturais\i;
 
 require_once __DIR__ . "/JobTypes/KoboSyncJob.php";
 
@@ -34,8 +35,46 @@ class Plugin extends \MapasCulturais\Plugin
         $self = $this;
 
         $app->registerJobType(new JobTypes\KoboSyncJob(JobTypes\KoboSyncJob::SLUG));
+        
+        $this->registerKoboMetadata();
 
         $self->scheduleSyncJobs();
+    }
+    
+    protected function registerKoboMetadata()
+    {
+        $integrations = $this->config['integrations'];
+        
+        if (!isset($integrations) || !is_array($integrations)) {
+            return;
+        }
+        
+        $entities = [];
+        foreach ($integrations as $integration) {
+            $target_entity = $integration['target_entity'] ?? null;
+            if ($target_entity && !in_array($target_entity, $entities)) {
+                $entities[] = $target_entity;
+            }
+        }
+        
+        foreach ($entities as $entity_name) {
+            if (strpos($entity_name, '\\') === false) {
+                $entity_class = "\MapasCulturais\Entities\\{$entity_name}";
+                
+                if (!class_exists($entity_class)) {
+                    $entity_class = "CustomEntity\Entities\\{$entity_name}";
+                }
+            } else {
+                $entity_class = $entity_name;
+            }
+            
+            // Registra o metadado kobo_form_id
+            $this->registerMetadata($entity_class, 'kobo_form_id', [
+                'label' => i::__('ID do Formulário Kobo'),
+                'type' => 'string',
+                'private' => true,
+            ]);
+        }
     }
 
     public function scheduleSyncJobs()
