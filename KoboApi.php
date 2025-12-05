@@ -2,6 +2,8 @@
 
 namespace Kobo;
 
+use MapasCulturais\i;
+
 class KoboApi
 {
     protected $api_url;
@@ -29,7 +31,7 @@ class KoboApi
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER => $headers,
             CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_TIMEOUT => 60,
         ]);
 
         if (!empty($data) && in_array($method, ['POST', 'PUT', 'PATCH'])) {
@@ -43,11 +45,11 @@ class KoboApi
         curl_close($ch);
 
         if ($error) {
-            throw new \Exception("Erro na requisição para API do Kobo: {$error}");
+            throw new \Exception(i::__('Erro na requisição para API do Kobo: ') . $error);
         }
 
-        if ($http_code >= 400) {
-            $error_message = "Erro HTTP {$http_code} na API do Kobo";
+        if ($http_code >= 400) {   
+            $error_message = i::__('Erro HTTP ') . $http_code . i::__(' na API do Kobo');
             if ($response) {
                 $error_data = json_decode($response, true);
                 if (isset($error_data['detail'])) {
@@ -73,7 +75,22 @@ class KoboApi
 
     public function getUserFromKobo(string $username): ?array
     {
-        return $this->request("users/{$username}/");
+        $response = $this->request("users/");
+        $users = $response['results'] ?? [];
+        
+        foreach ($users as $user) {
+            if ($user['username'] == $username) {
+                return $user;
+            }
+        }
+        
+        return null;
+    }
+    
+    public function getUserEmail(string $username): ?string
+    {
+        $user = $this->getUserFromKobo($username);
+        return $user['email'] ?? null;
     }
 }
 
