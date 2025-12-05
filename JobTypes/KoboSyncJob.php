@@ -9,6 +9,7 @@ use Kobo\Plugin;
 use MapasCulturais\App;
 use MapasCulturais\Definitions\JobType;
 use MapasCulturais\Entities\Job;
+use MapasCulturais\i;
 
 class KoboSyncJob extends JobType
 {
@@ -31,7 +32,7 @@ class KoboSyncJob extends JobType
             $field_mapping = $job->field_mapping ?? [];
 
             if (!$integration_id || !$kobo_form_id || !$target_entity) {
-                $app->log->error("KoboSyncJob: Dados de integração incompletos");
+                $app->log->error(i::__('KoboSyncJob: Dados de integração incompletos'));
                 return false;
             }
 
@@ -41,7 +42,7 @@ class KoboSyncJob extends JobType
             $api_config = $plugin->getApiConfig();
             
             if (empty($api_config['api_token'])) {
-                $app->log->error("KoboSyncJob: Token da API do Kobo não configurado");
+                $app->log->error(i::__('KoboSyncJob: Token da API do Kobo não configurado'));
                 return false;
             }
 
@@ -49,11 +50,11 @@ class KoboSyncJob extends JobType
             $kobo_api = new KoboApi($api_config['api_url'], $api_config['api_token']);
 
             // Obtém os dados do formulário
-            $app->log->info("KoboSyncJob: Buscando dados do formulário Kobo");
+            $app->log->info(i::__('KoboSyncJob: Buscando dados do formulário Kobo'));
 
             $submissions = $kobo_api->getSubmissions($kobo_form_id);
 
-            $app->log->info("KoboSyncJob: Encontrados " . count($submissions) . " registros no Kobo");
+            $app->log->info(i::__('KoboSyncJob: Encontrados ') . count($submissions) . i::__(' registros no Kobo'));
 
             // Processa cada submission
             $processed = 0;
@@ -61,68 +62,66 @@ class KoboSyncJob extends JobType
 
             foreach ($submissions as $submission) {
                 try {
-                    $this->processSubmission($submission, $target_entity, $field_mapping, $kobo_api);
+                    $this->processSubmission($submission, $target_entity, $field_mapping, $kobo_api, $kobo_form_id);
                     $processed++;
                 } catch (\Exception $e) {
                     $errors++;
-                    $app->log->error("KoboSyncJob: Erro ao processar submission");
+                    $app->log->error(i::__('KoboSyncJob: Erro ao processar submission'));
                 }
             }
 
-            $app->log->info("KoboSyncJob: Sincronização concluída");
+            $app->log->info(i::__('KoboSyncJob: Sincronização concluída'));
 
             return true;
 
         } catch (\Exception $e) {
-            $app->log->error("KoboSyncJob: Erro na execução do job");
+            $app->log->error(i::__('KoboSyncJob: Erro na execução do job'));
+            $app->log->error(i::__('Mensagem: ') . $e->getMessage());
             return false;
         }
     }
 
-    protected function processSubmission(array $submission, string $target_entity, array $field_mapping, KoboApi $kobo_api)
+    protected function processSubmission(array $submission, string $target_entity, array $field_mapping, KoboApi $kobo_api, string $kobo_form_id)
     {
         $app = App::i();
         
         
         $submission_data = $submission;
-        $kobo_submission_uuid = $submission['_uuid'] ?? $submission['_id'] ?? null;
+        $kobo_form_id = $submission['_uuid'] ?? $submission['_id'] ?? null;
         
-        if (!$kobo_submission_uuid) {
-            throw new \Exception("Submission sem identificador único");
+        if (!$kobo_form_id) {
+            throw new \Exception(i::__('Submission sem identificador do formulário do Kobo'));
         }
 
         // Obtém o usuário que preencheu o formulário no Kobo
-        $kobo_username = $submission['_submitted_by'] ?? null;
-        // $user = null;
- 
-        // TODO: Ajustar função getUserFromKobo após ter permissão de admin no Kobo
-        $user = $app->repo('User')->findOneBy(['id' => 1]);
-        // if($kobo_username) {
-        //     $kobo_user = $kobo_api->getUserFromKobo($kobo_username);
-        //     $user_email = $kobo_user['email'] ?? null;
-        //     if ($user_email) {
-        //         $user = $app->repo('User')->findOneBy(['email' => $user_email]);
-        //     }
-        // }
-        $this->updateOrCreateEntity($submission_data, $target_entity, $field_mapping, $user, $kobo_submission_uuid, $kobo_username);
+        if($kobo_username = $submission['_submitted_by'] ?? null) {
+            $user_email = $kobo_api->getUserEmail($kobo_username);
+            if ($user_email) {
+                $user = $app->repo('User')->findOneBy(['email' => $user_email]);
+                if (!$user) {
+                    $app->log->error(i::__('KoboSyncJob: Usuário não encontrado no MapasCulturais'));
+                    $app->log->error(i::__('Email: ') . $user_email);
+                    return;
+                }
+            }
+        }
+        $this->updateOrCreateEntity($submission_data, $target_entity, $field_mapping, $user, $kobo_form_id);
 
     }
     
-    protected function updateOrCreateEntity(array $submission_data, string $target_entity, array $field_mapping, $user, string $kobo_submission_uuid, ?string $kobo_username)
+    protected function updateOrCreateEntity(array $submission_data, string $target_entity, array $field_mapping, $user, string $kobo_form_id)
     {
         $app = App::i();
         
         $entity_class_name = $this->getEntityClassName($target_entity);
 
-        // possibilidade de fazer com metadado para encontrar a entidade
-        // $existing_entity = $this->findEntityByKoboSubmissionUuid($entity_class_name, $kobo_submission_uuid);
-        $existing_entity = null;
-        
+        $existing_entity = $this->findEntityByKoboFormId($entity_class_name, $kobo_form_id);
+
         $app->disableAccessControl();
 
         if ($existing_entity) {
             $entity = $existing_entity;
-            $app->log->info("KoboSyncJob: Atualizando entidade existente");
+            $app->log->info(i::__('KoboSyncJob: Atualizando entidade existente'));
         } else {
             $entity = new $entity_class_name();
             
@@ -130,21 +129,15 @@ class KoboSyncJob extends JobType
                 $entity->owner = $user->profile;
             }
             
-            $app->log->info("KoboSyncJob: Criando nova entidade");
+            // Salva o ID do formulário do Kobo
+            $entity->kobo_form_id = $kobo_form_id;
+            
+            $app->log->info(i::__('KoboSyncJob: Criando nova entidade'));
         }
-
-        // Caso utilize metadado
-        // $entity->kobo_submission_uuid = $kobo_submission_uuid;
-        // if ($kobo_username) {
-        //     $entity->kobo_submitted_by = $kobo_username;
-        // }
-        // if (isset($submission_data['_id'])) {
-        //     $entity->kobo_submission_id = $submission_data['_id'];
-        // }
 
         // Mapeia os campos
         $this->mapFields($submission_data, $entity, $field_mapping);
-
+        
         $entity->save(true);
 
         $app->enableAccessControl();
@@ -166,7 +159,7 @@ class KoboSyncJob extends JobType
             if (class_exists($custom_entity_class)) {
                 return $custom_entity_class;
             } else {
-                throw new \Exception("Classe de entidade '{$target_entity}' não encontrada em MapasCulturais\\Entities nem em CustomEntity\\Entities");
+                throw new \Exception(i::__('Classe de entidade ') . $target_entity . i::__(' não encontrada em MapasCulturais\\Entities nem em CustomEntity\\Entities'));
             }
         }
         
@@ -174,23 +167,21 @@ class KoboSyncJob extends JobType
     }
 
 
-    protected function findEntityByKoboSubmissionUuid(string $entity_class_name, string $kobo_submission_uuid)
+    protected function findEntityByKoboFormId(string $entity_class_name, string $kobo_form_id)
     {
         $app = App::i();
-
-        $repo_entity_name = $entity_class_name;
-        if (strpos($entity_class_name, 'CustomEntity\\Entities\\') === 0) {
-        } else {
-            $repo_entity_name = str_replace('MapasCulturais\\Entities\\', '', $entity_class_name);
-        }
         
-        $entity = $app->repo($repo_entity_name)->findOneBy(['kobo_submission_uuid' => $kobo_submission_uuid]);
-
-        if ($entity) {
-            return $entity;
-        }
-
-        return null;
+        // Busca a entidade completa usando DQL na tabela de metadados
+        $dql = "SELECT e FROM {$entity_class_name} e 
+                LEFT JOIN e.__metadata m 
+                WITH m.key = 'kobo_form_id' AND m.value = :kobo_form_id 
+                WHERE m.id IS NOT NULL";
+        
+        $query = $app->em->createQuery($dql);
+        $query->setParameter('kobo_form_id', $kobo_form_id);
+        $entity = $query->setMaxResults(1)->getOneOrNullResult();
+        
+        return $entity;
     }
 
     protected function mapFields(array $submission_data, $entity, array $field_mapping)
