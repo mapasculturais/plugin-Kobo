@@ -7,7 +7,7 @@
 
 ## Requisitos Mínimos
 - Mapas Culturais v7.6.0^
-- Token de API do Kobo Toolbox
+- Token de API do Kobo Toolbox **com permissões de administrador** (necessário para acessar o endpoint `/api/v2/users`)
 - Acesso à API v2 do Kobo Toolbox
 
 ## Funcionamento
@@ -81,7 +81,7 @@ return [
 
 - **Descrição dos parâmetros:**
   - `api_url`: URL base da API do Kobo Toolbox (padrão: `https://kf.kobotoolbox.org/api/v2`).
-  - `api_token`: Token de autenticação da API do Kobo Toolbox (obrigatório).
+  - `api_token`: Token de autenticação da API do Kobo Toolbox (obrigatório). **IMPORTANTE:** O token deve ter permissões de administrador, pois o plugin utiliza o endpoint `/api/v2/users` para identificar usuários através do email, e esse endpoint requer privilégios administrativos.
   - `integrations`: Array de configurações de integração, onde cada chave representa uma integração única:
     - `enabled`: Define se a integração está ativa (padrão: `false`).
     - `kobo_form_id`: ID único do formulário no Kobo Toolbox (Asset UID).
