@@ -45,11 +45,11 @@ class KoboApi
         curl_close($ch);
 
         if ($error) {
-            throw new \Exception(i::__('Erro na requisição para API do Kobo: ') . $error);
+            throw new \Exception(sprintf(i::__('Erro na requisição para API do Kobo: %s'), $error));
         }
 
         if ($http_code >= 400) {   
-            $error_message = i::__('Erro HTTP ') . $http_code . i::__(' na API do Kobo');
+            $error_message = sprintf(i::__('Erro HTTP %s na API do Kobo'), $http_code);
             if ($response) {
                 $error_data = json_decode($response, true);
                 if (isset($error_data['detail'])) {
