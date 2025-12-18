@@ -54,7 +54,7 @@ class KoboSyncJob extends JobType
 
             $submissions = $kobo_api->getSubmissions($kobo_form_id);
 
-            $app->log->info(i::__('KoboSyncJob: Encontrados ') . count($submissions) . i::__(' registros no Kobo'));
+            $app->log->info(sprintf(i::__('KoboSyncJob: Encontrados %s registros no Kobo'), count($submissions)));
 
             // Processa cada submission
             $processed = 0;
@@ -76,7 +76,7 @@ class KoboSyncJob extends JobType
 
         } catch (\Exception $e) {
             $app->log->error(i::__('KoboSyncJob: Erro na execução do job'));
-            $app->log->error(i::__('Mensagem: ') . $e->getMessage());
+            $app->log->error(sprintf(i::__('Mensagem: %s'), $e->getMessage()));
             return false;
         }
     }
@@ -100,70 +100,61 @@ class KoboSyncJob extends JobType
                 $user = $app->repo('User')->findOneBy(['email' => $user_email]);
                 if (!$user) {
                     $app->log->error(i::__('KoboSyncJob: Usuário não encontrado no MapasCulturais'));
-                    $app->log->error(i::__('Email: ') . $user_email);
+                    $app->log->error(sprintf(i::__('Email: %s'), $user_email));
                     return;
                 }
             }
         }
-        $this->updateOrCreateEntity($submission_data, $target_entity, $field_mapping, $user, $kobo_submission_uuid);
 
+        $this->updateOrCreateEntity($submission_data, $target_entity, $field_mapping, $user, $kobo_submission_uuid, $kobo_api);
     }
-    
-    protected function updateOrCreateEntity(array $submission_data, string $target_entity, array $field_mapping, $user, string $kobo_submission_uuid)
+
+    protected function updateOrCreateEntity(array $submission_data, string $target_entity, array $field_mapping, $user, string $kobo_submission_uuid, KoboApi $kobo_api = null)
     {
         $app = App::i();
-        
-        $entity_class_name = $this->getEntityClassName($target_entity);
 
-        $existing_entity = $this->findEntityByKoboSubmissionUuid($entity_class_name, $kobo_submission_uuid);
+        try {
+            $entity_class_name = $this->getEntityClassName($target_entity);
 
-        $app->disableAccessControl();
+            $existing_entity = $this->findEntityByKoboSubmissionUuid($entity_class_name, $kobo_submission_uuid);
 
-        if ($existing_entity) {
-            $entity = $existing_entity;
-            $app->log->info(i::__('KoboSyncJob: Atualizando entidade existente'));
-        } else {
-            $entity = new $entity_class_name();
-            
-            if ($user) {
-                $entity->owner = $user->profile;
+            $app->disableAccessControl();
+
+            if ($existing_entity) {
+                $entity = $existing_entity;
+                $app->log->info(i::__('KoboSyncJob: Atualizando entidade existente'));
+            } else {
+                $entity = new $entity_class_name();
+
+                if ($user) {
+                    $entity->owner = $user->profile;
+                }
+
+                // Salva o UUID da submissão do Kobo
+                $entity->kobo_submission_uuid = $kobo_submission_uuid;
+
+                $app->log->info(i::__('KoboSyncJob: Criando nova entidade'));
             }
-            
-            // Salva o UUID da submissão do Kobo
-            $entity->kobo_submission_uuid = $kobo_submission_uuid;
-            
-            $app->log->info(i::__('KoboSyncJob: Criando nova entidade'));
+
+            // Mapeia os campos
+            $this->mapFields($submission_data, $entity, $field_mapping, $kobo_api);
+            $entity->save(true);
+
+            $app->enableAccessControl();
+        } catch (\Exception $e) {
+            $app->enableAccessControl();
+
+            throw $e;
         }
-
-        // Mapeia os campos
-        $this->mapFields($submission_data, $entity, $field_mapping);
-        
-        $entity->save(true);
-
-        $app->enableAccessControl();
     }
     
     protected function getEntityClassName(string $target_entity): string
     {
-        // Se já tem namespace completo, usa direto
-        if (strpos($target_entity, '\\') !== false) {
-            return $target_entity;
+        if (!class_exists($target_entity)) {
+            throw new \Exception(sprintf(i::__("Classe de entidade %s não encontrada"), $target_entity));
         }
-        
-        // Tenta primeiro como entidade padrão do Mapas
-        $entity_class_name = "\MapasCulturais\Entities\\{$target_entity}";
-        
-        // Se não existir, tenta como entidade custom (CustomEntity)
-        if (!class_exists($entity_class_name)) {
-            $custom_entity_class = "CustomEntity\Entities\\{$target_entity}";
-            if (class_exists($custom_entity_class)) {
-                return $custom_entity_class;
-            } else {
-                throw new \Exception(i::__('Classe de entidade ') . $target_entity . i::__(' não encontrada em MapasCulturais\\Entities nem em CustomEntity\\Entities'));
-            }
-        }
-        
-        return $entity_class_name;
+
+        return $target_entity;
     }
 
 
@@ -184,12 +175,51 @@ class KoboSyncJob extends JobType
         return $entity;
     }
 
-    protected function mapFields(array $submission_data, $entity, array $field_mapping)
+    protected function mapFields(array $submission_data, $entity, array $field_mapping, KoboApi $kobo_api = null)
     {
+        $app = App::i();
+        
         foreach ($field_mapping as $kobo_field => $mapas_field) {
-            if ($value = $submission_data[$kobo_field] ?? null) {
-                $entity->$mapas_field = $value;
+            $value = $submission_data[$kobo_field] ?? null;
+            
+            if ($value == null || $value == '') {
+                continue;
             }
+            
+            // Verifica se é um campo especial (arquivo ou taxonomia)
+            if ($this->isSpecialField($mapas_field)) {
+                try {
+                    $this->mapSpecialField($submission_data, $entity, $kobo_field, $mapas_field, $kobo_api);
+                } catch (\Exception $e) {
+                    $app->log->warning(sprintf(i::__('KoboSyncJob: Erro ao mapear campo especial %s: %s'), $kobo_field, $e->getMessage()));
+                }
+            } else {
+                try {
+                    $entity->$mapas_field = $value;
+                } catch (\Exception $e) {
+                    $app->log->warning(sprintf(i::__('KoboSyncJob: Erro ao atribuir campo %s: %s'), $mapas_field, $e->getMessage()));
+                }
+            }
+        }
+    }
+    
+    protected function isSpecialField(string $mapas_field): bool
+    {
+        $special_fields = ['avatar', 'gallery', 'imageGallery', 'videoGallery', 'videos'];
+        return in_array($mapas_field, $special_fields) || str_starts_with($mapas_field, 'taxonomy:');
+    }
+    
+    protected function mapSpecialField(array $submission_data, $entity, string $kobo_field, string $mapas_field, KoboApi $kobo_api = null)
+    {
+        // Mapeamento de arquivos (avatar, gallery, videos)
+        // if (in_array($mapas_field, ['avatar', 'gallery', 'imageGallery', 'videoGallery', 'videos'])) {
+        //     $this->mapFileField($submission_data, $entity, $kobo_field, $mapas_field, $kobo_api);
+        // }
+
+        if (str_starts_with($mapas_field, 'taxonomy:')) {
+            $kobo_field_value = explode(' ', $submission_data[$kobo_field]);
+            $mapas_field_value = explode(':', $mapas_field)[1];
+            $entity->setTerms([$mapas_field_value => $kobo_field_value]);
         }
     }
 }
