@@ -27,7 +27,9 @@ class Plugin extends \MapasCulturais\Plugin
     /**
      * @return void
      */
-    function register(){}
+    function register() {
+        $this->registerKoboMetadata();
+    }
 
     function _init() 
     {
@@ -35,9 +37,6 @@ class Plugin extends \MapasCulturais\Plugin
         $self = $this;
 
         $app->registerJobType(new JobTypes\KoboSyncJob(JobTypes\KoboSyncJob::SLUG));
-        
-        $this->registerKoboMetadata();
-
         $self->scheduleSyncJobs();
     }
     
@@ -57,17 +56,7 @@ class Plugin extends \MapasCulturais\Plugin
             }
         }
         
-        foreach ($entities as $entity_name) {
-            if (strpos($entity_name, '\\') === false) {
-                $entity_class = "\MapasCulturais\Entities\\{$entity_name}";
-                
-                if (!class_exists($entity_class)) {
-                    $entity_class = "CustomEntity\Entities\\{$entity_name}";
-                }
-            } else {
-                $entity_class = $entity_name;
-            }
-            
+        foreach ($entities as $entity_class) {
             // Registra o metadado kobo_submission_uuid
             $this->registerMetadata($entity_class, 'kobo_submission_uuid', [
                 'label' => i::__('UUID da Submissão Kobo'),
