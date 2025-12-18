@@ -92,5 +92,34 @@ class KoboApi
         $user = $this->getUserFromKobo($username);
         return $user['email'] ?? null;
     }
+    
+    public function downloadFile(string $download_url): ?string
+    {
+        $ch = curl_init($download_url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Token ' . $this->api_token,
+            ],
+            CURLOPT_TIMEOUT => 300,
+        ]);
+        
+        $file_content = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+        
+        if ($error) {
+            throw new \Exception(sprintf(i::__('Erro ao baixar arquivo do Kobo: %s (URL: %s)'), $error, $download_url));
+        }
+        
+        if ($http_code >= 400) {
+            $error_msg = sprintf(i::__('Erro HTTP %s ao baixar arquivo do Kobo (URL: %s)'), $http_code, $download_url);
+            throw new \Exception($error_msg);
+        }
+        
+        return $file_content;
+    }
 }
 
