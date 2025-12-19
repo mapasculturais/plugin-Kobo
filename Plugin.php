@@ -95,7 +95,6 @@ class Plugin extends \MapasCulturais\Plugin
                 'now',
                 $interval_string,
                 1,
-                true
             );
         }
     }
