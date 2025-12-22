@@ -49,18 +49,28 @@ class KoboSyncJob extends JobType
             // Cria instância da API do Kobo
             $kobo_api = new KoboApi($api_config['api_url'], $api_config['api_token']);
 
+            // Obtém a data da última sincronização baseada nas entidades já sincronizadas
+            $last_sync_time = $this->getLastSyncTime($target_entity);
+            
             // Obtém os dados do formulário
             $app->log->info(i::__('KoboSyncJob: Buscando dados do formulário Kobo'));
+            
+            if ($last_sync_time) {
+                $app->log->info(sprintf(i::__('KoboSyncJob: Última sincronização: %s'), $last_sync_time->format('Y-m-d H:i:s')));
+            }
 
             $submissions = $kobo_api->getSubmissions($kobo_form_id);
 
-            $app->log->info(sprintf(i::__('KoboSyncJob: Encontrados %s registros no Kobo'), count($submissions)));
+            // Filtra apenas submissions modificados desde a última sincronização
+            $submissions_to_process = $this->filterSubmissionsByDate($submissions, $last_sync_time);
+
+            $app->log->info(sprintf(i::__('KoboSyncJob: Encontrados %s registros no Kobo, %s para processar'), count($submissions), count($submissions_to_process)));
 
             // Processa cada submission
             $processed = 0;
             $errors = 0;
 
-            foreach ($submissions as $submission) {
+            foreach ($submissions_to_process as $submission) {
                 try {
                     $this->processSubmission($submission, $target_entity, $field_mapping, $kobo_api, $kobo_form_id);
                     $processed++;
@@ -136,6 +146,12 @@ class KoboSyncJob extends JobType
                 $app->log->info(i::__('KoboSyncJob: Criando nova entidade'));
             }
 
+            // Salva a data de modificação (end) do submission na entidade
+            $submission_end = $this->getSubmissionEndTime($submission_data);
+            if ($submission_end) {
+                $entity->kobo_last_modified = $submission_end->format('Y-m-d H:i:s');
+            }
+
             // Mapeia os campos
             $this->mapFields($submission_data, $entity, $field_mapping, $kobo_api);
             $entity->save(true);
@@ -173,6 +189,72 @@ class KoboSyncJob extends JobType
         $entity = $query->setMaxResults(1)->getOneOrNullResult();
         
         return $entity;
+    }
+
+    protected function getLastSyncTime(string $target_entity): ?\DateTime
+    {
+        $app = App::i();
+        
+        try {
+            $entity_class_name = $this->getEntityClassName($target_entity);
+            
+            // Busca a entidade com o kobo_last_modified mais recente
+            $dql = "SELECT e FROM {$entity_class_name} e 
+                    LEFT JOIN e.__metadata m 
+                    WITH m.key = 'kobo_last_modified' 
+                    WHERE m.id IS NOT NULL 
+                    ORDER BY m.value DESC";
+            
+            $query = $app->em->createQuery($dql);
+            $query->setMaxResults(1);
+            $entity = $query->getOneOrNullResult();
+            
+            if ($entity && isset($entity->kobo_last_modified)) {
+                try {
+                    return new \DateTime($entity->kobo_last_modified);
+                } catch (\Exception $e) {
+                    return null;
+                }
+            }
+        } catch (\Exception $e) {
+            return null;
+        }
+        
+        return null;
+    }
+    
+    protected function filterSubmissionsByDate(array $submissions, ?\DateTime $last_sync_time): array
+    {
+        // Se não há última sincronização, processa todos
+        if (!$last_sync_time) {
+            return $submissions;
+        }
+        
+        $filtered = [];
+        foreach ($submissions as $submission) {
+            $submission_end = $this->getSubmissionEndTime($submission);
+            
+            // Se não tem data de fim ou é mais recente que a última sincronização, processa
+            if (!$submission_end || $submission_end > $last_sync_time) {
+                $filtered[] = $submission;
+            }
+        }
+        
+        return $filtered;
+    }
+    
+    protected function getSubmissionEndTime(array $submission): ?\DateTime
+    {
+        if (isset($submission['end'])) {
+            return new \DateTime($submission['end']);
+        }
+        
+        // Se 'end' não estiver disponível
+        if (isset($submission['_submission_time'])) {
+            return new \DateTime($submission['_submission_time']);
+        }
+        
+        return null;
     }
 
     protected function mapFields(array $submission_data, $entity, array $field_mapping, KoboApi $kobo_api = null)
