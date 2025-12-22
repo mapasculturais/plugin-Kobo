@@ -63,6 +63,13 @@ class Plugin extends \MapasCulturais\Plugin
                 'type' => 'string',
                 'private' => true,
             ]);
+
+            // Registra o metadado kobo_last_modified
+            $this->registerMetadata($entity_class, 'kobo_last_modified', [
+                'label' => i::__('Data da última sincronização Kobo'),
+                'type' => 'datetime',
+                'private' => true,
+            ]);
         }
     }
 
