@@ -155,6 +155,9 @@ class KoboSyncJob extends JobType
             // Mapeia os campos
             $this->mapFields($submission_data, $entity, $field_mapping, $kobo_api);
             $entity->save(true);
+            
+            // Processa arquivos após salvar a entidade (precisa de ID)
+            $this->processFileFields($submission_data, $entity, $field_mapping, $kobo_api);
 
             $app->enableAccessControl();
         } catch (\Exception $e) {
@@ -270,6 +273,11 @@ class KoboSyncJob extends JobType
             
             // Verifica se é um campo especial (arquivo ou taxonomia)
             if ($this->isSpecialField($mapas_field)) {
+                $file_fields = ['avatar', 'gallery', 'imageGallery', 'videoGallery', 'videos'];
+                if (in_array($mapas_field, $file_fields)) {
+                    continue;
+                }
+                
                 try {
                     $this->mapSpecialField($submission_data, $entity, $kobo_field, $mapas_field, $kobo_api);
                 } catch (\Exception $e) {
@@ -277,9 +285,37 @@ class KoboSyncJob extends JobType
                 }
             } else {
                 try {
-                    $entity->$mapas_field = $value;
+                    // Tratamento para location
+                    if ($mapas_field === 'location' || $mapas_field === 'geoLocation') {
+                        $entity->$mapas_field = $this->parseLocation($value);
+                    } else {
+                        $entity->$mapas_field = $value;
+                    }
                 } catch (\Exception $e) {
                     $app->log->warning(sprintf(i::__('KoboSyncJob: Erro ao atribuir campo %s: %s'), $mapas_field, $e->getMessage()));
+                }
+            }
+        }
+    }
+    
+    protected function processFileFields(array $submission_data, $entity, array $field_mapping, KoboApi $kobo_api = null)
+    {
+        $app = App::i();
+        
+        foreach ($field_mapping as $kobo_field => $mapas_field) {
+            $value = $submission_data[$kobo_field] ?? null;
+            
+            if ($value == null || $value == '') {
+                continue;
+            }
+            
+            // Processa apenas campos de arquivo
+            $file_fields = ['avatar', 'gallery', 'imageGallery', 'videoGallery', 'videos'];
+            if (in_array($mapas_field, $file_fields)) {
+                try {
+                    $this->mapSpecialField($submission_data, $entity, $kobo_field, $mapas_field, $kobo_api);
+                } catch (\Exception $e) {
+                    $app->log->warning(sprintf(i::__('KoboSyncJob: Erro ao mapear campo de arquivo %s: %s'), $kobo_field, $e->getMessage()));
                 }
             }
         }
@@ -294,14 +330,279 @@ class KoboSyncJob extends JobType
     protected function mapSpecialField(array $submission_data, $entity, string $kobo_field, string $mapas_field, KoboApi $kobo_api = null)
     {
         // Mapeamento de arquivos (avatar, gallery, videos)
-        // if (in_array($mapas_field, ['avatar', 'gallery', 'imageGallery', 'videoGallery', 'videos'])) {
-        //     $this->mapFileField($submission_data, $entity, $kobo_field, $mapas_field, $kobo_api);
-        // }
+        $file_fields = ['avatar', 'gallery', 'imageGallery', 'videoGallery', 'videos'];
+        if (in_array($mapas_field, $file_fields)) {
+            $this->mapFileField($submission_data, $entity, $kobo_field, $mapas_field, $kobo_api);
+            return;
+        }
 
+        // Mapeamento de taxonomias
         if (str_starts_with($mapas_field, 'taxonomy:')) {
             $kobo_field_value = explode(' ', $submission_data[$kobo_field]);
             $mapas_field_value = explode(':', $mapas_field)[1];
             $entity->setTerms([$mapas_field_value => $kobo_field_value]);
+        }
+    }
+    
+    protected function mapFileField(array $submission_data, $entity, string $kobo_field, string $mapas_field, KoboApi $kobo_api = null)
+    {
+        $app = App::i();
+        
+        if (!$kobo_api) {
+            $app->log->warning(i::__('KoboSyncJob: KoboApi não disponível para baixar arquivos'));
+            return;
+        }
+        
+        $attachments = $submission_data['_attachments'] ?? [];
+        
+        // Determina o grupo do arquivo
+        $file_group = $this->getFileGroup($mapas_field);
+        
+        try {
+            // Para avatar
+            if ($mapas_field === 'avatar') {
+                $this->saveSingleFile($entity, $kobo_field, $attachments, $file_group, $kobo_api);
+            }
+            // Para galeria de imagens
+            elseif (in_array($mapas_field, ['gallery', 'imageGallery'])) {
+                $this->saveImageGallery($entity, $kobo_field, $attachments, $file_group, $kobo_api);
+            }
+            // Para vídeos
+            elseif (in_array($mapas_field, ['videoGallery', 'videos'])) {
+                $this->saveVideoGallery($entity, $kobo_field, $attachments, $file_group, $kobo_api);
+            }
+        } catch (\Exception $e) {
+            $app->log->warning(sprintf(i::__('KoboSyncJob: Erro ao processar arquivo %s: %s'), $kobo_field, $e->getMessage()));
+        }
+    }
+    
+    protected function getFileGroup(string $mapas_field): string
+    {
+        $group_mapping = [
+            'avatar' => 'avatar',
+            'gallery' => 'gallery',
+            'imageGallery' => 'gallery',
+            'videoGallery' => 'videos',
+            'videos' => 'videos',
+        ];
+        
+        return $group_mapping[$mapas_field] ?? 'gallery';
+    }
+    
+    protected function saveSingleFile($entity, string $kobo_field, array $attachments, string $file_group, KoboApi $kobo_api)
+    {
+        $app = App::i();
+        $app->log->info(sprintf(i::__('KoboSyncJob: Procurando arquivo para campo: %s (grupo: %s)'), $kobo_field, $file_group));
+        $app->log->info(sprintf(i::__('KoboSyncJob: Entidade ID: %s, Tipo: %s'), $entity->id ?? 'NOVO', get_class($entity)));
+        
+        $found = false;
+        foreach ($attachments as $attachment) {
+            $question_xpath = $attachment['question_xpath'] ?? '';
+            
+            // Remove índices do question_xpath para comparar (ex: grupo_imagens[1]/imagens -> grupo_imagens/imagens)
+            $normalized_xpath = preg_replace('/\[\d+\]/', '', $question_xpath);
+            
+            $app->log->info(sprintf(i::__('KoboSyncJob: Verificando attachment - question_xpath: %s, normalized: %s, kobo_field: %s'), $question_xpath, $normalized_xpath, $kobo_field));
+            
+            if ($normalized_xpath == $kobo_field || $question_xpath == $kobo_field) {
+                $app->log->info(sprintf(i::__('KoboSyncJob: Attachment encontrado! URL: %s'), ($attachment['download_url'] ?? 'N/A')));
+                $found = true;
+                
+                // Remove arquivos existentes do grupo
+                $existing_files = $entity->getFiles($file_group);
+                if (is_array($existing_files)) {
+                    $app->log->info(sprintf(i::__('KoboSyncJob: Removendo %d arquivo(s) existente(s) do grupo %s'), count($existing_files), $file_group));
+                    foreach ($existing_files as $file) {
+                        $file->delete(true);
+                    }
+                } elseif ($existing_files) {
+                    $app->log->info(sprintf(i::__('KoboSyncJob: Removendo arquivo existente do grupo %s'), $file_group));
+                    $existing_files->delete(true);
+                }
+                
+                $this->downloadAndSaveFile($entity, $attachment, $file_group, $kobo_api);
+                break;
+            }
+        }
+        
+        if (!$found) {
+            $app->log->warning(sprintf(i::__('KoboSyncJob: Nenhum attachment encontrado para o campo %s'), $kobo_field));
+        }
+    }
+    
+    protected function saveImageGallery($entity, string $kobo_field, array $attachments, string $file_group, KoboApi $kobo_api)
+    {
+        // Procura todos os attachments que correspondem ao grupo_imagens
+        $image_attachments = [];
+        foreach ($attachments as $attachment) {
+            $question_xpath = $attachment['question_xpath'] ?? '';
+            $mimetype = $attachment['mimetype'] ?? '';
+            
+            // Verifica se é uma imagem
+            if (strpos($mimetype, 'image/') !== 0) {
+                continue;
+            }
+            
+            // Normaliza o question_xpath removendo índices (ex: grupo_imagens[1]/imagens -> grupo_imagens/imagens)
+            $normalized_xpath = preg_replace('/\[\d+\]/', '', $question_xpath);
+            
+            // Verifica se corresponde ao campo de imagens
+            if (strpos($normalized_xpath, $kobo_field) === 0 || 
+                strpos($question_xpath, $kobo_field) === 0) {
+                $image_attachments[] = $attachment;
+            }
+        }
+        
+        // Remove arquivos antigos da galeria
+        // $existing_files = $entity->getFiles($file_group);
+        // if (is_array($existing_files)) {
+        //     foreach ($existing_files as $file) {
+        //         $file->delete(true);
+        //     }
+        // }
+        
+        // Baixa e salva cada imagem
+        foreach ($image_attachments as $attachment) {
+            $this->downloadAndSaveFile($entity, $attachment, $file_group, $kobo_api);
+        }
+    }
+    
+    protected function saveVideoGallery($entity, string $kobo_field, array $attachments, string $file_group, KoboApi $kobo_api)
+    {
+        $app = App::i();
+        
+        $video_attachments = [];
+        foreach ($attachments as $attachment) {
+            $question_xpath = $attachment['question_xpath'] ?? '';
+            $mimetype = $attachment['mimetype'] ?? '';
+            
+            // Verifica se é um vídeo
+            if (strpos($mimetype, 'video/') !== 0) {
+                continue;
+            }
+            
+            // Normaliza o question_xpath removendo índices se houver
+            $normalized_xpath = preg_replace('/\[\d+\]/', '', $question_xpath);
+            
+            // Verifica se corresponde ao campo de vídeos
+            if (strpos($normalized_xpath, $kobo_field) === 0 || 
+                strpos($question_xpath, $kobo_field) === 0) {
+                $video_attachments[] = $attachment;
+            }
+        }
+        
+        // Baixa e salva cada vídeo como arquivo, depois cria MetaList
+        foreach ($video_attachments as $attachment) {
+            try {
+                // Primeiro salva o arquivo de vídeo
+                $video_file = $this->downloadAndSaveFile($entity, $attachment, $file_group, $kobo_api);
+                
+                if ($video_file) {
+                    // Cria MetaList com a URL do arquivo salvo
+                    $metalist = new \MapasCulturais\Entities\MetaList();
+                    $metalist->owner = $entity;
+                    $metalist->group = 'videos';
+                    $metalist->title = $attachment['media_file_basename'] ?? 'Vídeo';
+                    $metalist->value = $video_file->url;
+                    $metalist->save(true);
+                    
+                    $app->log->info(sprintf(i::__('KoboSyncJob: Vídeo salvo na galeria: %s'), $metalist->title));
+                }
+            } catch (\Exception $e) {
+                $app->log->warning(sprintf(i::__('KoboSyncJob: Erro ao salvar vídeo: %s'), $e->getMessage()));
+            }
+        }
+    }
+    
+    protected function parseLocation(string $location_string)
+    {
+        $app = App::i();
+        
+        $parts = preg_split('/\s+/', trim($location_string));
+        
+        $app->log->info(sprintf(i::__('KoboSyncJob: Parseando localização: %s'), $location_string));
+        
+        if (count($parts) >= 2 && is_numeric($parts[0]) && is_numeric($parts[1])) {
+            $latitude = (float)$parts[0];
+            $longitude = (float)$parts[1];
+            
+            $app->log->info(sprintf(i::__('KoboSyncJob: Coordenadas extraídas - Latitude: %s, Longitude: %s'), $latitude, $longitude));
+            
+            return new \MapasCulturais\Types\GeoPoint($longitude, $latitude);
+        }
+        
+        throw new \Exception(sprintf(i::__('Formato de localização inválido: %s'), $location_string));
+    }
+    
+    protected function downloadAndSaveFile($entity, array $attachment, string $file_group, KoboApi $kobo_api)
+    {
+        $app = App::i();
+        
+        try {
+            $download_url = $attachment['download_url'] ?? null;
+            $filename = $attachment['media_file_basename'] ?? $attachment['filename'] ?? 'file';
+            $mimetype = $attachment['mimetype'] ?? 'application/octet-stream';
+            
+            if (!$download_url) {
+                $app->log->warning(i::__('KoboSyncJob: URL de download não encontrada para arquivo'));
+                return false;
+            }
+            
+            $app->log->info(sprintf(i::__('KoboSyncJob: Tentando baixar arquivo de: %s'), $download_url));
+            $app->log->info(sprintf(i::__('KoboSyncJob: Entidade ID: %s, Grupo: %s, Nome arquivo: %s'), $entity->id ?? 'NOVO', $file_group, $filename));
+            
+            try {
+                $file_content = $kobo_api->downloadFile($download_url);
+            } catch (\Exception $e) {
+                $app->log->warning(sprintf(i::__('KoboSyncJob: Erro ao baixar arquivo (continuando sem o arquivo): %s'), $e->getMessage()));
+                $app->log->warning(sprintf(i::__('KoboSyncJob: URL tentada: %s'), $download_url));
+                
+                return false;
+            }
+            
+            if ($file_content === null || empty($file_content)) {
+                $app->log->warning(i::__('KoboSyncJob: Arquivo baixado está vazio'));
+                return false;
+            }
+            
+            $app->log->info(sprintf(i::__('KoboSyncJob: Arquivo baixado com sucesso, tamanho: %d bytes'), strlen($file_content)));
+            
+            // Salva em arquivo temporário
+            $tmp_file = tempnam(sys_get_temp_dir(), 'kobo_');
+            file_put_contents($tmp_file, $file_content);
+            
+            $app->log->info(sprintf(i::__('KoboSyncJob: Arquivo temporário criado: %s'), $tmp_file));
+            
+            // Cria a entidade File
+            $file_class = $entity->fileClassName;
+            $app->log->info(sprintf(i::__('KoboSyncJob: Criando entidade File da classe: %s'), $file_class));
+            
+            $file = new $file_class([
+                'name' => $filename,
+                'type' => $mimetype,
+                'tmp_name' => $tmp_file,
+                'error' => 0,
+                'size' => filesize($tmp_file),
+            ]);
+            
+            $file->group = $file_group;
+            $file->owner = $entity;
+            
+            $app->log->info(sprintf(i::__('KoboSyncJob: Salvando arquivo - grupo: %s, owner ID: %s'), $file->group, $entity->id));
+            
+            $file->save(true);
+            
+            // Limpa o arquivo temporário
+            @unlink($tmp_file);
+            
+            $app->log->info(sprintf(i::__('KoboSyncJob: Arquivo salvo com sucesso: %s (ID: %s)'), $filename, $file->id ?? 'N/A'));
+            return $file;
+            
+        } catch (\Exception $e) {
+            $app->log->error(sprintf(i::__('KoboSyncJob: Erro ao salvar arquivo: %s'), $e->getMessage()));
+            $app->log->error(sprintf(i::__('KoboSyncJob: Stack trace: %s'), $e->getTraceAsString()));
+            
+            return false;
         }
     }
 }
