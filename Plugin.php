@@ -96,12 +96,23 @@ class Plugin extends \MapasCulturais\Plugin
 
             $interval_string = $integration['periodicity'] ?? '+1 day';
             
+            // Agendar para meia-noite de hoje
+            $midnight_today = date('Y-m-d 00:00:00');
+            
+            // Verificar se o job já está enfileirado
+            $job_type = $app->getRegisteredJobType(JobTypes\KoboSyncJob::SLUG);
+            $job_id = $job_type->generateId($job_data, $midnight_today, $interval_string, 10 * 365);
+            
+            if ($app->repo('Job')->findOneBy(['id' => $job_id])) {
+                continue;
+            }
+
             $app->enqueueJob(
                 JobTypes\KoboSyncJob::SLUG,
                 $job_data,
-                'now',
+                $midnight_today,
                 $interval_string,
-                1,
+                10 * 365,
             );
         }
     }
