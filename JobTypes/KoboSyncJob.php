@@ -95,11 +95,12 @@ class KoboSyncJob extends JobType
     {
         $app = App::i();
         
-        
         $submission_data = $submission;
-        $kobo_submission_uuid = $submission['_uuid'] ?? $submission['_id'] ?? null;
+        $kobo_submission_id = $submission['_id'] ?? $submission['_uuid'] ?? null;
         
-        if (!$kobo_submission_uuid) {
+        $app->log->info(sprintf(i::__('KoboSyncJob: Processando submission - ID: %s'), $kobo_submission_id ?? 'NÃO ENCONTRADO'));
+        
+        if (!$kobo_submission_id) {
             throw new \Exception(i::__('Submission sem identificador do formulário do Kobo'));
         }
 
@@ -116,23 +117,26 @@ class KoboSyncJob extends JobType
             }
         }
 
-        $this->updateOrCreateEntity($submission_data, $target_entity, $field_mapping, $user, $kobo_submission_uuid, $kobo_api);
+        $this->updateOrCreateEntity($submission_data, $target_entity, $field_mapping, $user, $kobo_submission_id, $kobo_api);
     }
 
-    protected function updateOrCreateEntity(array $submission_data, string $target_entity, array $field_mapping, $user, string $kobo_submission_uuid, KoboApi $kobo_api = null)
+    protected function updateOrCreateEntity(array $submission_data, string $target_entity, array $field_mapping, $user, string $kobo_submission_id, KoboApi $kobo_api = null)
     {
         $app = App::i();
 
         try {
             $entity_class_name = $this->getEntityClassName($target_entity);
 
-            $existing_entity = $this->findEntityByKoboSubmissionUuid($entity_class_name, $kobo_submission_uuid);
+            $existing_entity = $this->findEntityByKoboSubmissionId($entity_class_name, $kobo_submission_id);
 
             $app->disableAccessControl();
 
             if ($existing_entity) {
                 $entity = $existing_entity;
-                $app->log->info(i::__('KoboSyncJob: Atualizando entidade existente'));
+                if (!$entity->kobo_submission_uuid) {
+                    $entity->kobo_submission_uuid = $kobo_submission_id;
+                }
+                $app->log->info(sprintf(i::__('KoboSyncJob: Atualizando entidade existente (ID: %s, Kobo Submission ID: %s)'), $entity->id, $kobo_submission_id));
             } else {
                 $entity = new $entity_class_name();
 
@@ -140,10 +144,10 @@ class KoboSyncJob extends JobType
                     $entity->owner = $user->profile;
                 }
 
-                // Salva o UUID da submissão do Kobo
-                $entity->kobo_submission_uuid = $kobo_submission_uuid;
+                // Salva o ID da submissão do Kobo (usando _id que não muda quando o formulário é editado)
+                $entity->kobo_submission_uuid = $kobo_submission_id;
 
-                $app->log->info(i::__('KoboSyncJob: Criando nova entidade'));
+                $app->log->info(sprintf(i::__('KoboSyncJob: Criando nova entidade (Kobo Submission ID: %s)'), $kobo_submission_id));
             }
 
             // Salva a data de modificação (end) do submission na entidade
@@ -176,19 +180,18 @@ class KoboSyncJob extends JobType
         return $target_entity;
     }
 
-
-    protected function findEntityByKoboSubmissionUuid(string $entity_class_name, string $kobo_submission_uuid)
+    protected function findEntityByKoboSubmissionId(string $entity_class_name, string $kobo_submission_id)
     {
         $app = App::i();
         
         // Busca a entidade completa usando DQL na tabela de metadados
         $dql = "SELECT e FROM {$entity_class_name} e 
                 LEFT JOIN e.__metadata m 
-                WITH m.key = 'kobo_submission_uuid' AND m.value = :kobo_submission_uuid 
+                WITH m.key = 'kobo_submission_uuid' AND m.value = :kobo_submission_id 
                 WHERE m.id IS NOT NULL";
         
         $query = $app->em->createQuery($dql);
-        $query->setParameter('kobo_submission_uuid', $kobo_submission_uuid);
+        $query->setParameter('kobo_submission_id', $kobo_submission_id);
         $entity = $query->setMaxResults(1)->getOneOrNullResult();
         
         return $entity;
@@ -454,8 +457,45 @@ class KoboSyncJob extends JobType
         }
     }
     
+    protected function removeFilesFromGroup($entity, string $file_group)
+    {
+        $app = App::i();
+        
+        if (!$entity->id) {
+            $app->log->warning(i::__('KoboSyncJob: Entidade sem ID, não é possível remover arquivos'));
+            return;
+        }
+        
+        // Garante que a entidade está sincronizada com o banco
+        $entity = $entity->refreshed();
+        
+        // Busca arquivos diretamente do repositório usando o método findByGroup
+        $entity_class = get_class($entity);
+        $file_class_name = $entity_class::getFileClassName();
+        $file_repo = $app->repo($file_class_name);
+        
+        // Busca todos os arquivos do grupo
+        $existing_files = $file_repo->findBy([
+            'owner' => $entity,
+            'group' => $file_group
+        ]);
+        
+        // Se findBy retornar um único arquivo (não array), converte para array
+        if (!is_array($existing_files)) {
+            $existing_files = $existing_files ? [$existing_files] : [];
+        }
+        
+        $app->log->info(sprintf(i::__('KoboSyncJob: Removendo %d arquivo(s) existente(s) do grupo %s (entidade ID: %s)'), count($existing_files), $file_group, $entity->id));
+        
+        foreach ($existing_files as $file) {
+            $file->delete(true);
+        }
+    }
+    
     protected function saveImageGallery($entity, string $kobo_field, array $attachments, string $file_group, KoboApi $kobo_api)
     {
+        $app = App::i();
+        
         // Procura todos os attachments que correspondem ao grupo_imagens
         $image_attachments = [];
         foreach ($attachments as $attachment) {
@@ -477,13 +517,10 @@ class KoboSyncJob extends JobType
             }
         }
         
-        // Remove arquivos antigos da galeria
-        // $existing_files = $entity->getFiles($file_group);
-        // if (is_array($existing_files)) {
-        //     foreach ($existing_files as $file) {
-        //         $file->delete(true);
-        //     }
-        // }
+        $app->log->info(sprintf(i::__('KoboSyncJob: Encontradas %d imagem(ns) para processar no campo %s'), count($image_attachments), $kobo_field));
+        
+        // Remove TODOS os arquivos antigos da galeria antes de adicionar os novos
+        $this->removeFilesFromGroup($entity, $file_group);
         
         // Baixa e salva cada imagem
         foreach ($image_attachments as $attachment) {
@@ -515,6 +552,20 @@ class KoboSyncJob extends JobType
             }
         }
         
+        $app->log->info(sprintf(i::__('KoboSyncJob: Encontrados %d vídeo(s) para processar no campo %s'), count($video_attachments), $kobo_field));
+        
+        // Remove TODOS os arquivos antigos do grupo de vídeos
+        $this->removeFilesFromGroup($entity, $file_group);
+        
+        // Remove MetaLists antigas de vídeos usando findByGroup do repositório
+        $existing_metalists = $app->repo('MetaList')->findByGroup($entity, 'videos');
+        
+        $app->log->info(sprintf(i::__('KoboSyncJob: Removendo %d MetaList(s) existente(s) do grupo videos'), count($existing_metalists)));
+        
+        foreach ($existing_metalists as $metalist) {
+            $metalist->delete(true);
+        }
+        
         // Baixa e salva cada vídeo como arquivo, depois cria MetaList
         foreach ($video_attachments as $attachment) {
             try {
@@ -524,7 +575,7 @@ class KoboSyncJob extends JobType
                 if ($video_file) {
                     // Cria MetaList com a URL do arquivo salvo
                     $metalist = new \MapasCulturais\Entities\MetaList();
-                    $metalist->owner = $entity;
+                    $metalist->setOwner($entity);
                     $metalist->group = 'videos';
                     $metalist->title = $attachment['media_file_basename'] ?? 'Vídeo';
                     $metalist->value = $video_file->url;
