@@ -50,7 +50,7 @@ class KoboSyncJob extends JobType
             $kobo_api = new KoboApi($api_config['api_url'], $api_config['api_token']);
 
             // Obtém a data da última sincronização baseada nas entidades já sincronizadas
-            $last_sync_time = $this->getLastSyncTime($target_entity);
+            $last_sync_time = $this->getLastSyncTime($target_entity, $job);
             
             // Obtém os dados do formulário
             $app->log->info(i::__('KoboSyncJob: Buscando dados do formulário Kobo'));
@@ -194,7 +194,7 @@ class KoboSyncJob extends JobType
         return $entity;
     }
 
-    protected function getLastSyncTime(string $target_entity): ?\DateTime
+    protected function getLastSyncTime(string $target_entity, Job $job): ?\DateTime
     {
         $app = App::i();
         
@@ -212,12 +212,36 @@ class KoboSyncJob extends JobType
             $query->setMaxResults(1);
             $entity = $query->getOneOrNullResult();
             
+            $last_entity_sync = null;
+
             if ($entity && isset($entity->kobo_last_modified)) {
                 try {
-                    return new \DateTime($entity->kobo_last_modified);
+                    $last_entity_sync = new \DateTime($entity->kobo_last_modified);
                 } catch (\Exception $e) {
-                    return null;
+                    $last_entity_sync = null;
                 }
+            }
+
+            $last_job_execution = $job->lastExecutionTimestamp ?? null;
+
+            if ($last_job_execution && !($last_job_execution instanceof \DateTime)) {
+                try {
+                    $last_job_execution = new \DateTime($last_job_execution);
+                } catch (\Exception $e) {
+                    $last_job_execution = null;
+                }
+            }
+
+            if ($last_entity_sync && $last_job_execution) {
+                return $last_job_execution > $last_entity_sync ? $last_job_execution : $last_entity_sync;
+            }
+
+            if ($last_job_execution) {
+                return $last_job_execution;
+            }
+
+            if ($last_entity_sync) {
+                return $last_entity_sync;
             }
         } catch (\Exception $e) {
             return null;
